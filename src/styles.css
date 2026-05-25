@@ -1,0 +1,229 @@
+:root {
+  color: #17202a;
+  background: #eef3f8;
+  font-family:
+    Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    linear-gradient(180deg, #dbeaf3 0, #eef3f8 220px),
+    #eef3f8;
+}
+
+.app-shell {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  padding: max(18px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom));
+}
+
+.waiting {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+}
+
+.top-card,
+.card {
+  border: 1px solid rgba(61, 80, 99, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 32px rgba(35, 49, 64, 0.08);
+}
+
+.top-card {
+  padding: 22px 18px;
+  margin-bottom: 14px;
+}
+
+.card {
+  padding: 18px;
+  margin: 12px 0;
+}
+
+.waiting-card {
+  width: 100%;
+  padding: 24px 20px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #1f6b7a;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 28px;
+  line-height: 1.25;
+}
+
+h2 {
+  margin-bottom: 14px;
+  color: #1d2b38;
+  font-size: 18px;
+}
+
+.muted,
+.empty-small {
+  color: #687684;
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.meta-row span {
+  border: 1px solid rgba(31, 107, 122, 0.2);
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: #eaf6f8;
+  color: #1e5d69;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.field {
+  padding: 10px 0;
+  border-bottom: 1px solid #eef1f4;
+}
+
+.field:last-child {
+  border-bottom: 0;
+}
+
+.field-label,
+.chunk-index,
+.sentence-title,
+.question-title {
+  color: #5a6672;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.field-value {
+  margin-top: 5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+.passage,
+.sentence-text,
+.question-card p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+
+.sentence-list,
+.list {
+  display: grid;
+  gap: 12px;
+}
+
+.sentence-card,
+.chunk-card,
+.list-item,
+.question-card {
+  border: 1px solid #e3e9ee;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.sentence-card,
+.question-card {
+  padding: 14px;
+}
+
+.sentence-title,
+.question-title {
+  margin-bottom: 8px;
+  color: #1f6b7a;
+}
+
+.chunk-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.chunk-card {
+  padding: 12px;
+}
+
+.chunk-card .field {
+  padding: 8px 0;
+}
+
+.list-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.list-item strong {
+  color: #203040;
+}
+
+.list-item span {
+  color: #4e5d6b;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.json-view {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 14px;
+  background: #101820;
+  color: #edf7ff;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 640px) {
+  .app-shell {
+    padding-inline: 24px;
+  }
+
+  .top-card,
+  .card {
+    padding: 22px;
+  }
+
+  .chunk-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
