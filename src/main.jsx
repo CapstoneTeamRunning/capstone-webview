@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const MESSAGE_TYPE = 'ANALYSIS_DATA';
+const ARROW_COLORS = ['#8b5cf6', '#10b981', '#f59e0b', '#ec4899', '#0ea5e9', '#ef4444'];
 
 function parseMessageData(data) {
   if (typeof data === 'string') {
@@ -16,16 +17,38 @@ function parseMessageData(data) {
   return data && typeof data === 'object' ? data : null;
 }
 
+function unwrapPayload(value) {
+  let current = value;
+
+  if (Array.isArray(current)) {
+    current = current[0] ?? null;
+  }
+
+  if (current?.result_json) {
+    current = current.result_json;
+  } else if (current?.resultJson) {
+    current = current.resultJson;
+  }
+
+  if (Array.isArray(current)) {
+    current = current[0] ?? null;
+  }
+
+  return current;
+}
+
 function normalizePayload(message) {
-  if (!message || message.type !== MESSAGE_TYPE) {
-    return null;
+  if (!message) return null;
+
+  if (message.type === MESSAGE_TYPE) {
+    return unwrapPayload(message.payload);
   }
 
-  if (Array.isArray(message.payload)) {
-    return message.payload[0] ?? null;
+  if (message.analysis_data || message.analysisData || message.sentences || message.result_json || message.resultJson) {
+    return unwrapPayload(message);
   }
 
-  return message.payload ?? null;
+  return null;
 }
 
 function asArray(value) {
@@ -48,29 +71,7 @@ function getAnalysisRoot(data) {
   return data?.analysis_data ?? data?.analysisData ?? data?.analysis ?? {};
 }
 
-function getSentences(data) {
-  const root = getAnalysisRoot(data);
-
-  return firstArray(
-    data?.syntax_analysis_sentences,
-    data?.sentences,
-    root?.syntax_analysis_sentences,
-    root?.sentences,
-    root?.sentence_analysis,
-    root?.sentenceAnalysis,
-    root?.syntax_analysis?.sentences
-  );
-}
-
-function getSentenceChunks(sentence) {
-  return firstArray(
-    sentence?.chunks,
-    sentence?.syntax_analysis_chunks,
-    sentence?.syntax_chunks
-  );
-}
-
-function getAllChunks(data) {
+function getRootChunks(data) {
   const root = getAnalysisRoot(data);
 
   return firstArray(
@@ -82,156 +83,254 @@ function getAllChunks(data) {
   );
 }
 
-function getVocabulary(data) {
+function getRawSentences(data) {
   const root = getAnalysisRoot(data);
-
-  return firstArray(
-    data?.vocabulary,
-    data?.vocabularies,
-    root?.vocabulary,
-    root?.vocabularies
+  const sentences = firstArray(
+    Array.isArray(data?.analysis_data) ? data.analysis_data : null,
+    Array.isArray(data?.analysisData) ? data.analysisData : null,
+    data?.syntax_analysis_sentences,
+    data?.sentences,
+    root?.syntax_analysis_sentences,
+    root?.sentences,
+    root?.sentence_analysis,
+    root?.sentenceAnalysis,
+    root?.syntax_analysis?.sentences
   );
+
+  if (sentences.length > 0) return sentences;
+
+  const chunks = getRootChunks(data);
+  if (chunks.length === 0) return [];
+
+  return [
+    {
+      sentence_no: 1,
+      full_translation: data?.full_translation ?? data?.fullTranslation ?? root?.full_translation ?? '',
+      chunks,
+    },
+  ];
 }
 
-function getQuestions(data) {
-  const root = getAnalysisRoot(data);
-
-  return firstArray(
-    data?.generated_questions,
-    data?.questions,
-    root?.generated_questions,
-    root?.questions
-  );
-}
-
-function renderValue(value, fallback = '-') {
-  if (value === null || value === undefined || value === '') return fallback;
-  if (typeof value === 'object') return JSON.stringify(value, null, 2);
+function scalar(value, fallback = '') {
+  if (value === null || value === undefined) return fallback;
+  if (Array.isArray(value)) return value.join('');
+  if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
 
-function Field({ label, value }) {
-  return (
-    <div className="field">
-      <div className="field-label">{label}</div>
-      <div className="field-value">{renderValue(value)}</div>
-    </div>
+function normalizeChunk(chunk, index) {
+  if (!chunk || typeof chunk !== 'object') {
+    return {
+      chunk_id: index,
+      target_text: scalar(chunk),
+      korean_meaning: '',
+      syntax_tag: null,
+      grammar_note: null,
+      box_color: null,
+      text_color: null,
+      bracket_open: null,
+      bracket_close: null,
+      modifies_chunk_id: null,
+    };
+  }
+
+  return {
+    chunk_id: chunk.chunk_id ?? chunk.chunkId ?? chunk.id ?? index,
+    target_text: scalar(chunk.target_text ?? chunk.targetText ?? chunk.text ?? chunk.word),
+    korean_meaning: scalar(chunk.korean_meaning ?? chunk.koreanMeaning ?? chunk.meaning),
+    syntax_tag: chunk.syntax_tag ?? chunk.syntaxTag ?? chunk.tag ?? null,
+    grammar_note: chunk.grammar_note ?? chunk.grammarNote ?? chunk.note ?? null,
+    box_color: chunk.box_color ?? chunk.boxColor ?? null,
+    text_color: chunk.text_color ?? chunk.textColor ?? null,
+    bracket_open: chunk.bracket_open ?? chunk.bracketOpen ?? null,
+    bracket_close: chunk.bracket_close ?? chunk.bracketClose ?? null,
+    modifies_chunk_id: chunk.modifies_chunk_id ?? chunk.modifiesChunkId ?? chunk.modifies ?? null,
+  };
+}
+
+function getSentenceChunks(sentence) {
+  return firstArray(
+    sentence?.chunks,
+    sentence?.syntax_analysis_chunks,
+    sentence?.syntax_chunks
   );
 }
 
-function Section({ title, children }) {
+function normalizeSentence(sentence, index) {
+  if (!sentence || typeof sentence !== 'object') {
+    return {
+      sentence_no: index + 1,
+      full_translation: '',
+      is_topic_sentence: false,
+      chunks: [normalizeChunk(sentence, 0)],
+    };
+  }
+
+  let chunks = getSentenceChunks(sentence);
+  if (chunks.length === 0 && (sentence.target_text || sentence.targetText || sentence.text || sentence.sentence)) {
+    chunks = [sentence];
+  }
+
+  return {
+    sentence_no: sentence.sentence_no ?? sentence.sentenceNo ?? sentence.no ?? index + 1,
+    full_translation: sentence.full_translation ?? sentence.fullTranslation ?? sentence.translation ?? '',
+    is_topic_sentence: Boolean(sentence.is_topic_sentence ?? sentence.isTopicSentence),
+    chunks: chunks.map(normalizeChunk),
+  };
+}
+
+function normalizeAnalysis(data) {
+  const payload = unwrapPayload(data);
+  if (!payload || typeof payload !== 'object') return null;
+
+  const sentences = getRawSentences(payload).map(normalizeSentence);
+  if (sentences.length === 0) return null;
+
+  return {
+    code: payload.code ?? '',
+    topic: payload.topic ?? '',
+    commentary: payload.commentary ?? '',
+    analysis_data: { sentences },
+  };
+}
+
+function safeIdPart(value) {
+  return scalar(value, 'x').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function SentenceViewer({ sentence }) {
+  const containerRef = useRef(null);
+  const [arrows, setArrows] = useState([]);
+  const sentenceId = safeIdPart(sentence.sentence_no);
+
+  useEffect(() => {
+    const drawArrows = () => {
+      if (!containerRef.current) return;
+
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const nextArrows = [];
+      let arrowIndex = 0;
+
+      sentence.chunks.forEach((chunk) => {
+        if (chunk.modifies_chunk_id === null || chunk.modifies_chunk_id === undefined || chunk.modifies_chunk_id === '') {
+          return;
+        }
+
+        const sourceId = `chunk-${sentenceId}-${safeIdPart(chunk.chunk_id)}`;
+        const targetId = `chunk-${sentenceId}-${safeIdPart(chunk.modifies_chunk_id)}`;
+        const sourceEl = document.getElementById(sourceId);
+        const targetEl = document.getElementById(targetId);
+
+        if (!sourceEl || !targetEl) return;
+
+        const sourceRect = sourceEl.getBoundingClientRect();
+        const targetRect = targetEl.getBoundingClientRect();
+        const startX = sourceRect.left + sourceRect.width / 2 - containerRect.left;
+        const startY = sourceRect.bottom - containerRect.top;
+        const endX = targetRect.left + targetRect.width / 2 - containerRect.left;
+        const endY = targetRect.bottom - containerRect.top;
+        const dropY = Math.max(startY, endY) + 15 + arrowIndex * 8;
+
+        nextArrows.push({
+          d: `M ${startX} ${startY + 2} L ${startX} ${dropY} L ${endX} ${dropY} L ${endX} ${endY + 6}`,
+          colorIndex: arrowIndex % ARROW_COLORS.length,
+        });
+        arrowIndex += 1;
+      });
+
+      setArrows(nextArrows);
+    };
+
+    const timer = window.setTimeout(drawArrows, 120);
+    window.addEventListener('resize', drawArrows);
+
+    let observer = null;
+    if (window.ResizeObserver && containerRef.current) {
+      observer = new ResizeObserver(drawArrows);
+      observer.observe(containerRef.current);
+    }
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('resize', drawArrows);
+      observer?.disconnect();
+    };
+  }, [sentence, sentenceId]);
+
   return (
-    <section className="card">
-      <h2>{title}</h2>
-      {children}
+    <section ref={containerRef} className={`sentence-viewer ${sentence.is_topic_sentence ? 'topic-sentence' : ''}`}>
+      <svg className="arrow-layer" aria-hidden="true">
+        <defs>
+          {ARROW_COLORS.map((color, index) => (
+            <marker key={color} id={`arrowhead-${sentenceId}-${index}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <polygon points="0 0, 6 3, 0 6" fill={color} />
+            </marker>
+          ))}
+        </defs>
+        {arrows.map((arrow, index) => (
+          <path
+            key={index}
+            d={arrow.d}
+            fill="none"
+            stroke={ARROW_COLORS[arrow.colorIndex]}
+            strokeWidth="2"
+            markerEnd={`url(#arrowhead-${sentenceId}-${arrow.colorIndex})`}
+          />
+        ))}
+      </svg>
+
+      <div className="sentence-header">
+        <div className={`sentence-number ${sentence.is_topic_sentence ? 'topic-number' : ''}`}>{sentence.sentence_no}</div>
+        {sentence.is_topic_sentence && <span className="topic-badge">핵심 주제문</span>}
+      </div>
+
+      <div className="chunks-row">
+        {sentence.chunks.map((chunk, index) => (
+          <div className="chunk-token" id={`chunk-${sentenceId}-${safeIdPart(chunk.chunk_id)}`} key={`${chunk.chunk_id}-${index}`}>
+            {chunk.syntax_tag && <span className="syntax-tag">{chunk.syntax_tag}</span>}
+            <div className="chunk-line">
+              {chunk.bracket_open && <span className="bracket">{scalar(chunk.bracket_open)}</span>}
+              <span className={`target-text ${chunk.box_color === 'red' ? 'box-red' : ''} ${chunk.box_color === 'blue' ? 'box-blue' : ''} ${chunk.text_color === 'green' ? 'text-green' : ''}`}>
+                {chunk.target_text}
+              </span>
+              {chunk.bracket_close && <span className="bracket">{scalar(chunk.bracket_close)}</span>}
+            </div>
+            <span className="korean-meaning">{chunk.korean_meaning}</span>
+            <div className="grammar-slot">
+              {chunk.grammar_note && <span className="grammar-note">{chunk.grammar_note}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {sentence.full_translation && <div className="full-translation">▶ {sentence.full_translation}</div>}
     </section>
   );
 }
 
-function ChunkCard({ chunk, index }) {
+function VisualAnalysis({ analysis }) {
   return (
-    <article className="chunk-card">
-      <div className="chunk-index">Chunk {index + 1}</div>
-      <Field label="target_text" value={chunk?.target_text ?? chunk?.targetText ?? chunk?.text} />
-      <Field label="korean_meaning" value={chunk?.korean_meaning ?? chunk?.koreanMeaning ?? chunk?.meaning} />
-      <Field label="syntax_tag" value={chunk?.syntax_tag ?? chunk?.syntaxTag ?? chunk?.tag} />
-      <Field label="grammar_note" value={chunk?.grammar_note ?? chunk?.grammarNote ?? chunk?.note} />
-    </article>
-  );
-}
-
-function SentenceAnalysis({ data }) {
-  const sentences = getSentences(data);
-  const rootChunks = getAllChunks(data);
-
-  if (sentences.length === 0 && rootChunks.length === 0) {
-    return <p className="empty-small">문장별 구문 분석 데이터가 없습니다.</p>;
-  }
-
-  if (sentences.length === 0) {
-    return (
-      <div className="chunk-grid">
-        {rootChunks.map((chunk, index) => (
-          <ChunkCard key={index} chunk={chunk} index={index} />
+    <main className="app-shell analysis-only">
+      <div className="visual-analysis">
+        {analysis.analysis_data.sentences.map((sentence) => (
+          <SentenceViewer key={sentence.sentence_no} sentence={sentence} />
         ))}
       </div>
-    );
-  }
-
-  return (
-    <div className="sentence-list">
-      {sentences.map((sentence, sentenceIndex) => {
-        const chunks = getSentenceChunks(sentence);
-
-        return (
-          <article className="sentence-card" key={sentenceIndex}>
-            <div className="sentence-title">Sentence {sentenceIndex + 1}</div>
-            <p className="sentence-text">
-              {renderValue(sentence?.sentence ?? sentence?.text ?? sentence?.target_text ?? sentence)}
-            </p>
-            {chunks.length > 0 && (
-              <div className="chunk-grid">
-                {chunks.map((chunk, chunkIndex) => (
-                  <ChunkCard key={chunkIndex} chunk={chunk} index={chunkIndex} />
-                ))}
-              </div>
-            )}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function VocabularyList({ items }) {
-  if (items.length === 0) {
-    return <p className="empty-small">vocabulary 데이터가 없습니다.</p>;
-  }
-
-  return (
-    <div className="list">
-      {items.map((item, index) => (
-        <article className="list-item" key={index}>
-          <strong>{renderValue(item?.word ?? item?.target_text ?? item?.term ?? `Item ${index + 1}`)}</strong>
-          <span>{renderValue(item?.meaning ?? item?.korean_meaning ?? item?.definition ?? item)}</span>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function QuestionList({ items }) {
-  if (items.length === 0) {
-    return <p className="empty-small">generated_questions 데이터가 없습니다.</p>;
-  }
-
-  return (
-    <div className="list">
-      {items.map((item, index) => (
-        <article className="question-card" key={index}>
-          <div className="question-title">Q{index + 1}</div>
-          <p>{renderValue(item?.question ?? item?.prompt ?? item)}</p>
-          {item?.options && <Field label="options" value={item.options} />}
-          {item?.answer && <Field label="answer" value={item.answer} />}
-          {item?.explanation && <Field label="explanation" value={item.explanation} />}
-        </article>
-      ))}
-    </div>
+    </main>
   );
 }
 
 function App() {
-  const [analysisData, setAnalysisData] = useState(null);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
 
   useEffect(() => {
     const handleMessage = (event) => {
       const message = parseMessageData(event.data);
       const payload = normalizePayload(message);
+      const normalized = normalizeAnalysis(payload);
 
-      if (payload) {
-        setAnalysisData(payload);
-        setLastUpdatedAt(new Date());
+      if (normalized) {
+        setAnalysis(normalized);
       }
     };
 
@@ -252,13 +351,10 @@ function App() {
     };
   }, []);
 
-  const vocabulary = useMemo(() => getVocabulary(analysisData), [analysisData]);
-  const questions = useMemo(() => getQuestions(analysisData), [analysisData]);
-
-  if (!analysisData) {
+  if (!analysis) {
     return (
       <main className="app-shell waiting">
-        <section className="card waiting-card">
+        <section className="waiting-card">
           <p className="eyebrow">Capstone Analysis</p>
           <h1>앱에서 분석 데이터를 기다리는 중입니다.</h1>
           <p className="muted">Android WebView에서 분석 결과가 전달되면 이 화면에 표시됩니다.</p>
@@ -267,44 +363,7 @@ function App() {
     );
   }
 
-  return (
-    <main className="app-shell">
-      <header className="top-card">
-        <p className="eyebrow">Capstone Analysis</p>
-        <h1>분석 결과</h1>
-        <div className="meta-row">
-          <span>{renderValue(analysisData.code, '코드 없음')}</span>
-          {lastUpdatedAt && <span>{lastUpdatedAt.toLocaleTimeString('ko-KR')}</span>}
-        </div>
-      </header>
-
-      <Section title="기본 정보">
-        <Field label="code" value={analysisData.code} />
-        <Field label="topic" value={analysisData.topic} />
-        <Field label="commentary" value={analysisData.commentary} />
-      </Section>
-
-      <Section title="지문">
-        <p className="passage">{renderValue(analysisData.passage)}</p>
-      </Section>
-
-      <Section title="문장별 구문 분석">
-        <SentenceAnalysis data={analysisData} />
-      </Section>
-
-      <Section title="Vocabulary">
-        <VocabularyList items={vocabulary} />
-      </Section>
-
-      <Section title="Generated Questions">
-        <QuestionList items={questions} />
-      </Section>
-
-      <Section title="원본 JSON">
-        <pre className="json-view">{JSON.stringify(analysisData, null, 2)}</pre>
-      </Section>
-    </main>
-  );
+  return <VisualAnalysis analysis={analysis} />;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
