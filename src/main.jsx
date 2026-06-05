@@ -1,9 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const MESSAGE_TYPE = 'ANALYSIS_DATA';
 const ARROW_COLORS = ['#8b5cf6', '#10b981', '#f59e0b', '#ec4899', '#0ea5e9', '#ef4444'];
+const DEFAULT_TRANSLATION_OFFSET = 32;
+const DEFAULT_CHUNK_ROW_GAP = 48;
+const MIN_ARROW_ROW_GAP = 56;
+const MAX_ARROW_ROW_GAP = 82;
+const ARROW_ROW_TOLERANCE = 8;
+const ARROW_LANE_START_OFFSET = 18;
+const ARROW_LANE_GAP = 9;
+const ARROW_INTERVAL_PADDING = 14;
+const ARROW_VERTICAL_SLOT_GAP = 10;
+const ARROW_ENDPOINT_PADDING = 10;
 
 function parseMessageData(data) {
   if (typeof data === 'string') {
@@ -198,47 +208,202 @@ function safeIdPart(value) {
   return scalar(value, 'x').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+function rangesOverlap(a, b, padding = 0) {
+  return Math.max(a[0], b[0]) - padding <= Math.min(a[1], b[1]) + padding;
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function allocateLane(lanes, interval) {
+  for (let index = 0; index < lanes.length; index += 1) {
+    if (!lanes[index].some((used) => rangesOverlap(used, interval, ARROW_INTERVAL_PADDING))) {
+      lanes[index].push(interval);
+      return index;
+    }
+  }
+
+  lanes.push([interval]);
+  return lanes.length - 1;
+}
+
+function countSlot(groupMap, key) {
+  const group = groupMap.get(key) ?? { total: 0, used: 0 };
+  group.total += 1;
+  groupMap.set(key, group);
+}
+
+function claimSlot(groupMap, key) {
+  const group = groupMap.get(key) ?? { total: 1, used: 0 };
+  const index = group.used;
+  group.used += 1;
+  groupMap.set(key, group);
+
+  return {
+    index,
+    total: group.total,
+  };
+}
+
+function slotOffset(index, total) {
+  return (index - (total - 1) / 2) * ARROW_VERTICAL_SLOT_GAP;
+}
+
+function tokenSlotX(token, slot) {
+  return clamp(
+    token.centerX + slotOffset(slot.index, slot.total),
+    token.left - ARROW_ENDPOINT_PADDING,
+    token.right + ARROW_ENDPOINT_PADDING
+  );
+}
+
 function SentenceViewer({ sentence }) {
   const containerRef = useRef(null);
+  const chunksRowRef = useRef(null);
   const [arrows, setArrows] = useState([]);
+  const [layout, setLayout] = useState({
+    translationOffset: DEFAULT_TRANSLATION_OFFSET,
+    rowGap: MIN_ARROW_ROW_GAP,
+  });
   const sentenceId = safeIdPart(sentence.sentence_no);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const drawArrows = () => {
-      if (!containerRef.current) return;
+      if (!containerRef.current || !chunksRowRef.current) return;
 
       const containerRect = containerRef.current.getBoundingClientRect();
+      const chunksRowRect = chunksRowRef.current.getBoundingClientRect();
+      const tokenRects = [];
+      const tokenByChunkId = new Map();
       const nextArrows = [];
+      const bandLanes = new Map();
+      const startSlotGroups = new Map();
+      const endSlotGroups = new Map();
       let arrowIndex = 0;
+      let maxArrowY = chunksRowRect.bottom - containerRect.top;
 
       sentence.chunks.forEach((chunk) => {
-        if (chunk.modifies_chunk_id === null || chunk.modifies_chunk_id === undefined || chunk.modifies_chunk_id === '') {
-          return;
-        }
+        const tokenEl = document.getElementById(`chunk-${sentenceId}-${safeIdPart(chunk.chunk_id)}`);
+        if (!tokenEl) return;
 
-        const sourceId = `chunk-${sentenceId}-${safeIdPart(chunk.chunk_id)}`;
-        const targetId = `chunk-${sentenceId}-${safeIdPart(chunk.modifies_chunk_id)}`;
-        const sourceEl = document.getElementById(sourceId);
-        const targetEl = document.getElementById(targetId);
+        const rect = tokenEl.getBoundingClientRect();
+        const token = {
+          chunkId: safeIdPart(chunk.chunk_id),
+          left: rect.left - containerRect.left,
+          right: rect.right - containerRect.left,
+          top: rect.top - containerRect.top,
+          bottom: rect.bottom - containerRect.top,
+          centerX: rect.left + rect.width / 2 - containerRect.left,
+          rowIndex: -1,
+        };
 
-        if (!sourceEl || !targetEl) return;
+        tokenRects.push(token);
+        tokenByChunkId.set(token.chunkId, token);
+      });
 
-        const sourceRect = sourceEl.getBoundingClientRect();
-        const targetRect = targetEl.getBoundingClientRect();
-        const startX = sourceRect.left + sourceRect.width / 2 - containerRect.left;
-        const startY = sourceRect.bottom - containerRect.top;
-        const endX = targetRect.left + targetRect.width / 2 - containerRect.left;
-        const endY = targetRect.bottom - containerRect.top;
-        const dropY = Math.max(startY, endY) + 15 + arrowIndex * 8;
+      const rows = [];
+      tokenRects
+        .slice()
+        .sort((a, b) => a.bottom - b.bottom || a.left - b.left)
+        .forEach((token) => {
+          let row = rows.find((candidate) => Math.abs(candidate.bottom - token.bottom) <= ARROW_ROW_TOLERANCE);
+
+          if (!row) {
+            row = {
+              top: token.top,
+              bottom: token.bottom,
+              tokens: [],
+            };
+            rows.push(row);
+          }
+
+          row.tokens.push(token);
+          row.top = Math.min(row.top, token.top);
+          row.bottom = Math.max(row.bottom, token.bottom);
+          token.rowIndex = rows.indexOf(row);
+        });
+
+      const links = sentence.chunks
+        .map((chunk) => {
+          if (chunk.modifies_chunk_id === null || chunk.modifies_chunk_id === undefined || chunk.modifies_chunk_id === '') {
+            return null;
+          }
+
+          const source = tokenByChunkId.get(safeIdPart(chunk.chunk_id));
+          const target = tokenByChunkId.get(safeIdPart(chunk.modifies_chunk_id));
+
+          if (!source || !target || source.rowIndex < 0 || target.rowIndex < 0) return null;
+
+          const sameRow = source.rowIndex === target.rowIndex;
+          const bandIndex = Math.min(source.rowIndex, target.rowIndex);
+
+          return {
+            source,
+            target,
+            sameRow,
+            bandIndex,
+            bandKey: `band-${bandIndex}`,
+            startSlotKey: `${source.chunkId}-${source.rowIndex}`,
+            endSlotKey: `${target.chunkId}-${target.rowIndex}`,
+          };
+        })
+        .filter(Boolean);
+
+      links.forEach(({ startSlotKey, endSlotKey }) => {
+        countSlot(startSlotGroups, startSlotKey);
+        countSlot(endSlotGroups, endSlotKey);
+      });
+
+      links.forEach(({ source, target, sameRow, bandIndex, bandKey, startSlotKey, endSlotKey }) => {
+        const lanes = bandLanes.get(bandKey) ?? [];
+        bandLanes.set(bandKey, lanes);
+
+        const startX = tokenSlotX(source, claimSlot(startSlotGroups, startSlotKey));
+        const endX = tokenSlotX(target, claimSlot(endSlotGroups, endSlotKey));
+        const interval = [Math.min(startX, endX), Math.max(startX, endX)];
+        const laneIndex = allocateLane(lanes, interval);
+        const laneBaseY = rows[bandIndex].bottom + ARROW_LANE_START_OFFSET;
+        const laneY = laneBaseY + laneIndex * ARROW_LANE_GAP;
+        const sourceAboveTarget = source.rowIndex < target.rowIndex;
+        const sourceBelowTarget = source.rowIndex > target.rowIndex;
+        const startY = sourceBelowTarget ? source.top - 4 : source.bottom + 4;
+        const endY = sameRow
+          ? target.bottom + 4
+          : sourceAboveTarget
+            ? target.top - 8
+            : target.bottom + 6;
 
         nextArrows.push({
-          d: `M ${startX} ${startY + 2} L ${startX} ${dropY} L ${endX} ${dropY} L ${endX} ${endY + 6}`,
+          d: `M ${startX} ${startY} L ${startX} ${laneY} L ${endX} ${laneY} L ${endX} ${endY}`,
           colorIndex: arrowIndex % ARROW_COLORS.length,
         });
+
+        maxArrowY = Math.max(maxArrowY, startY, laneY, endY);
         arrowIndex += 1;
       });
 
+      const maxLaneCount = Math.max(0, ...Array.from(bandLanes.values(), (lanes) => lanes.length));
+      const nextRowGap = nextArrows.length > 0
+        ? clamp(ARROW_LANE_START_OFFSET + maxLaneCount * ARROW_LANE_GAP + 20, MIN_ARROW_ROW_GAP, MAX_ARROW_ROW_GAP)
+        : DEFAULT_CHUNK_ROW_GAP;
+      const chunksBottom = chunksRowRect.bottom - containerRect.top;
+      const nextTranslationOffset = Math.max(
+        DEFAULT_TRANSLATION_OFFSET,
+        Math.ceil(maxArrowY - chunksBottom + DEFAULT_TRANSLATION_OFFSET)
+      );
+
       setArrows(nextArrows);
+      setLayout((current) => {
+        if (current.translationOffset === nextTranslationOffset && current.rowGap === nextRowGap) {
+          return current;
+        }
+
+        return {
+          translationOffset: nextTranslationOffset,
+          rowGap: nextRowGap,
+        };
+      });
     };
 
     const timer = window.setTimeout(drawArrows, 120);
@@ -258,7 +423,14 @@ function SentenceViewer({ sentence }) {
   }, [sentence, sentenceId]);
 
   return (
-    <section ref={containerRef} className={`sentence-viewer ${sentence.is_topic_sentence ? 'topic-sentence' : ''}`}>
+    <section
+      ref={containerRef}
+      className={`sentence-viewer ${sentence.is_topic_sentence ? 'topic-sentence' : ''}`}
+      style={{
+        '--translation-offset': `${layout.translationOffset}px`,
+        '--chunk-row-gap': `${layout.rowGap}px`,
+      }}
+    >
       <svg className="arrow-layer" aria-hidden="true">
         <defs>
           {ARROW_COLORS.map((color, index) => (
@@ -274,6 +446,8 @@ function SentenceViewer({ sentence }) {
             fill="none"
             stroke={ARROW_COLORS[arrow.colorIndex]}
             strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
             markerEnd={`url(#arrowhead-${sentenceId}-${arrow.colorIndex})`}
           />
         ))}
@@ -284,7 +458,7 @@ function SentenceViewer({ sentence }) {
         {sentence.is_topic_sentence && <span className="topic-badge">핵심 주제문</span>}
       </div>
 
-      <div className="chunks-row">
+      <div ref={chunksRowRef} className="chunks-row">
         {sentence.chunks.map((chunk, index) => (
           <div className="chunk-token" id={`chunk-${sentenceId}-${safeIdPart(chunk.chunk_id)}`} key={`${chunk.chunk_id}-${index}`}>
             {chunk.syntax_tag && <span className="syntax-tag">{chunk.syntax_tag}</span>}

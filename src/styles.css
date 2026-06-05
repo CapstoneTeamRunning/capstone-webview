@@ -142,7 +142,7 @@ h1 {
   flex-wrap: wrap;
   align-items: flex-end;
   column-gap: 8px;
-  row-gap: 48px;
+  row-gap: var(--chunk-row-gap, 48px);
 }
 
 .chunk-token {
@@ -237,7 +237,7 @@ h1 {
 }
 
 .full-translation {
-  margin-top: 32px;
+  margin-top: var(--translation-offset, 32px);
   border: 1px solid #f1f5f9;
   border-radius: 16px;
   padding: 16px 20px;
